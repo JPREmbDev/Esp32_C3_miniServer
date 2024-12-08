@@ -5,8 +5,151 @@
 #include "esp_http_server.h"
 #include "esp_netif.h"
 #include "server.h"
+#include "esp_chip_info.h"  // Add this line
+#include "esp_system.h"
+#include <string>
 
 static const char *TAG = "server";
+
+// Función para obtener los datos del sistema
+std::string get_system_info() {
+    std::string info;
+    esp_chip_info_t chip_info;
+    esp_chip_info(&chip_info);
+
+    char buf[128];
+    snprintf(buf, sizeof(buf),
+             "Modelo: ESP32-C3<br>"
+             "Núcleos: %d<br>"
+             "WiFi: %s<br>"
+             "Revisión: %d<br>",
+             chip_info.cores,
+             (chip_info.features & CHIP_FEATURE_WIFI_BGN) ? "2.4GHz" : "No disponible",
+             chip_info.revision);
+    info = buf;
+    return info;
+}
+
+// Manejador para la página principal
+esp_err_t root_handler(httpd_req_t *req) {
+    // Obtener información dinámica del sistema
+    std::string system_info = get_system_info();
+
+    // Construir HTML dinámico
+    const char *html_start = R"rawliteral(
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESP32-C3 Dashboard</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: #f0f2f5;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        .card {
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #2c3e50;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .info-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+        }
+        .status {
+            display: inline-block;
+            padding: 5px 10px;
+            border-radius: 15px;
+            background: #4CAF50;
+            color: white;
+        }
+        .button {
+            background: #3498db;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+        .button:hover {
+            background: #2980b9;
+        }
+        .system-info {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 5px;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>ESP32-C3 Dashboard</h1>
+        <div class="card">
+            <h2>Estado del Sistema</h2>
+            <span class="status">Activo</span>
+            <div class="system-info">)rawliteral";
+
+    const char *html_end = R"rawliteral(
+            </div>
+        </div>
+
+        <div class="info-grid">
+            <div class="card">
+                <h2>Control LED</h2>
+                <button class="button" onclick="toggleLED()">Encender/Apagar LED</button>
+            </div>
+            <div class="card">
+                <h2>Temperatura</h2>
+                <div id="temp">24&deg;C</div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Registro de Actividad</h2>
+            <div id="log">
+                Sistema iniciado correctamente<br>
+                WiFi conectado<br>
+                Servidor web activo
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function toggleLED() {
+            alert("Función de LED en desarrollo");
+        }
+    </script>
+</body>
+</html>
+    )rawliteral";
+
+    // Combinar todo el HTML
+    std::string dynamic_html = std::string(html_start) + system_info + html_end;
+
+    // Enviar la respuesta HTTP
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_send(req, dynamic_html.c_str(), dynamic_html.length());
+    return ESP_OK;
+}
+
+
 
 // Mostrar la dirección IP después de la conexión Wi-Fi
 void show_ip() {
@@ -60,20 +203,34 @@ httpd_handle_t start_webserver() {
     httpd_handle_t server = NULL;
 
     ESP_LOGI(TAG, "Iniciando servidor web...");
-
     if (httpd_start(&server, &config) == ESP_OK) {
-        // Registro de la URI /hello (GET)
+        // Registrar el manejador para la página raíz
+        httpd_uri_t root_uri = {
+            .uri      = "/",
+            .method   = HTTP_GET,
+            .handler  = root_handler,
+            .user_ctx = NULL
+        };
+        ESP_LOGI(TAG, "Registrando URI /");
+        if (httpd_register_uri_handler(server, &root_uri) != ESP_OK) {
+            ESP_LOGE(TAG, "Error al registrar manejador de URI /");
+            return NULL;
+        }
+
+        // Registrar el manejador para /hello
         httpd_uri_t hello_uri = {
             .uri      = "/hello",
             .method   = HTTP_GET,
             .handler  = hello_handler,
             .user_ctx = NULL
         };
-
         ESP_LOGI(TAG, "Registrando URI /hello");
-        httpd_register_uri_handler(server, &hello_uri);
+        if (httpd_register_uri_handler(server, &hello_uri) != ESP_OK) {
+            ESP_LOGE(TAG, "Error al registrar manejador de URI /hello");
+            return NULL;
+        }
 
-        // Registro de la URI /message (POST)
+        // Registrar el manejador para /message
         httpd_uri_t message_uri = {
             .uri      = "/message",
             .method   = HTTP_POST,
@@ -81,14 +238,17 @@ httpd_handle_t start_webserver() {
             .user_ctx = NULL
         };
         ESP_LOGI(TAG, "Registrando URI /message");
-        httpd_register_uri_handler(server, &message_uri);
+        if (httpd_register_uri_handler(server, &message_uri) != ESP_OK) {
+            ESP_LOGE(TAG, "Error al registrar manejador de URI /message");
+            return NULL;
+        }
 
-        ESP_LOGI(TAG, "Servidor iniciado en el puerto %d", config.server_port);
-    } else {
-        ESP_LOGE(TAG, "Error iniciando el servidor web");
-    }
+        ESP_LOGI(TAG, "Todos los manejadores registrados correctamente");
+        return server;
+    } 
 
-    return server;
+    ESP_LOGE(TAG, "Error iniciando el servidor web");
+    return NULL;
 }
 
 // Inicializa WiFi y servidor web
@@ -138,8 +298,8 @@ void startServer() {
 
     // Configure WiFi station
     wifi_config_t wifi_config = {};
-    strcpy((char *)wifi_config.sta.ssid, "Livebox6-2580");
-    strcpy((char *)wifi_config.sta.password, "B*t83re9%5o8^8itMNUoNQx@4Nu@*8SL");
+    strcpy((char *)wifi_config.sta.ssid, SSID);
+    strcpy((char *)wifi_config.sta.password, PASSWORD);
     wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
     
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
